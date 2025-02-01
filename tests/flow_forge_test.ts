@@ -8,6 +8,82 @@ import {
 import { assertEquals } from 'https://deno.land/std@0.90.0/testing/asserts.ts';
 
 Clarinet.test({
+  name: "Can create workflow template",
+  async fn(chain: Chain, accounts: Map<string, Account>) {
+    const deployer = accounts.get('deployer')!;
+    const approver = accounts.get('wallet_1')!;
+    
+    let states = [
+      {
+        state: types.ascii("DRAFT"),
+        transitions: types.list([types.ascii("PENDING")]),
+        approvers: types.list([types.principal(approver.address)])
+      },
+      {
+        state: types.ascii("PENDING"),
+        transitions: types.list([types.ascii("APPROVED"), types.ascii("REJECTED")]),
+        approvers: types.list([types.principal(approver.address)])
+      }
+    ];
+    
+    let block = chain.mineBlock([
+      Tx.contractCall('flow_forge', 'create-template', [
+        types.ascii("Purchase Order Template"),
+        types.ascii("DRAFT"),
+        types.list(states)
+      ], deployer.address)
+    ]);
+    
+    block.receipts[0].result.expectOk();
+    assertEquals(block.receipts[0].result, types.ok(types.uint(1)));
+  }
+});
+
+Clarinet.test({
+  name: "Can create workflow from template",
+  async fn(chain: Chain, accounts: Map<string, Account>) {
+    const deployer = accounts.get('deployer')!;
+    const approver = accounts.get('wallet_1')!;
+    
+    // Create template
+    let states = [
+      {
+        state: types.ascii("DRAFT"),
+        transitions: types.list([types.ascii("PENDING")]),
+        approvers: types.list([types.principal(approver.address)])
+      }
+    ];
+    
+    let block = chain.mineBlock([
+      Tx.contractCall('flow_forge', 'create-template', [
+        types.ascii("Purchase Order Template"),
+        types.ascii("DRAFT"),
+        types.list(states)
+      ], deployer.address)
+    ]);
+    
+    // Create workflow from template
+    block = chain.mineBlock([
+      Tx.contractCall('flow_forge', 'create-workflow-from-template', [
+        types.ascii("Purchase Order #1"),
+        types.uint(1)
+      ], deployer.address)
+    ]);
+    
+    block.receipts[0].result.expectOk();
+    
+    // Verify initial state
+    block = chain.mineBlock([
+      Tx.contractCall('flow_forge', 'get-workflow-state', [
+        types.uint(1)
+      ], deployer.address)
+    ]);
+    
+    assertEquals(block.receipts[0].result, types.ascii("DRAFT"));
+  }
+});
+
+Clarinet.test({
   name: "Can create new workflow",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const deployer = accounts.get('deployer')!;
@@ -45,7 +121,7 @@ Clarinet.test({
     block = chain.mineBlock([
       Tx.contractCall('flow_forge', 'define-state-transitions', [
         types.uint(1),
-        types.ascii("DRAFT"),
+        types.ascii("DRAFT"), 
         types.list(transitions),
         types.list(approvers)
       ], deployer.address)

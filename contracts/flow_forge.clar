@@ -1,11 +1,13 @@
 ;; Flow Forge - Workflow Automation Contract
 
-;; Constants
+;; Constants 
 (define-constant contract-owner tx-sender)
 (define-constant err-owner-only (err u100))
 (define-constant err-workflow-not-found (err u101))
 (define-constant err-invalid-state (err u102))
 (define-constant err-unauthorized (err u103))
+(define-constant err-template-not-found (err u104))
+(define-constant err-invalid-template (err u105))
 
 ;; Data vars
 (define-map workflows
@@ -14,7 +16,8 @@
         name: (string-ascii 64),
         creator: principal,
         current-state: (string-ascii 24),
-        created-at: uint
+        created-at: uint,
+        template-id: (optional uint)
     }
 )
 
@@ -36,9 +39,83 @@
     }
 )
 
+(define-map workflow-templates
+    { template-id: uint }
+    {
+        name: (string-ascii 64),
+        creator: principal,
+        initial-state: (string-ascii 24),
+        states: (list 10 {
+            state: (string-ascii 24),
+            transitions: (list 10 (string-ascii 24)),
+            approvers: (list 10 principal)
+        })
+    }
+)
+
 ;; Data vars for sequence tracking
 (define-data-var workflow-id-nonce uint u0)
-(define-data-var history-nonce uint u0)
+(define-data-var history-nonce uint u0) 
+(define-data-var template-id-nonce uint u0)
+
+;; Create workflow template
+(define-public (create-template 
+    (name (string-ascii 64))
+    (initial-state (string-ascii 24))
+    (states (list 10 {
+        state: (string-ascii 24),
+        transitions: (list 10 (string-ascii 24)),
+        approvers: (list 10 principal)
+    }))
+)
+    (let
+        (
+            (new-id (+ (var-get template-id-nonce) u1))
+        )
+        (try! (validate-caller))
+        (map-set workflow-templates
+            { template-id: new-id }
+            {
+                name: name,
+                creator: tx-sender,
+                initial-state: initial-state,
+                states: states
+            }
+        )
+        (var-set template-id-nonce new-id)
+        (ok new-id)
+    )
+)
+
+;; Create workflow from template
+(define-public (create-workflow-from-template 
+    (name (string-ascii 64))
+    (template-id uint)
+)
+    (let
+        (
+            (template (unwrap! (map-get? workflow-templates { template-id: template-id }) err-template-not-found))
+            (new-id (+ (var-get workflow-id-nonce) u1))
+        )
+        ;; Create workflow
+        (map-set workflows
+            { workflow-id: new-id }
+            {
+                name: name,
+                creator: tx-sender,
+                current-state: (get initial-state template),
+                created-at: block-height,
+                template-id: (some template-id)
+            }
+        )
+        
+        ;; Setup states from template
+        (map define-state-from-template (get states template))
+        
+        (var-set workflow-id-nonce new-id)
+        (ok new-id)
+    )
+)
 
 ;; Create new workflow
 (define-public (create-workflow (name (string-ascii 64)) (initial-state (string-ascii 24)))
@@ -53,7 +130,8 @@
                 name: name,
                 creator: tx-sender,
                 current-state: initial-state,
-                created-at: block-height
+                created-at: block-height,
+                template-id: none
             }
         )
         (var-set workflow-id-nonce new-id)
@@ -139,6 +217,16 @@
     (is-some (index-of (get approvers state-def) tx-sender))
 )
 
+(define-private (define-state-from-template (state-def {state: (string-ascii 24), transitions: (list 10 (string-ascii 24)), approvers: (list 10 principal)}))
+    (map-set workflow-states
+        { workflow-id: (var-get workflow-id-nonce), state: (get state state-def) }
+        {
+            allowed-transitions: (get transitions state-def),
+            approvers: (get approvers state-def)
+        }
+    )
+)
+
 ;; Read only functions
 (define-read-only (get-workflow-state (workflow-id uint))
     (get current-state (unwrap! (get-workflow workflow-id) err-workflow-not-found))
@@ -146,4 +234,8 @@
 
 (define-read-only (get-workflow-history (workflow-id uint) (sequence uint))
     (map-get? workflow-history { workflow-id: workflow-id, sequence: sequence })
+)
+
+(define-read-only (get-template (template-id uint))
+    (map-get? workflow-templates { template-id: template-id })
 )
